@@ -23,7 +23,7 @@ export default function ChatPanel() {
       // Keep frontend-generated suggestions, errors, and the optimistic user message while processing
       const localMessages = prev.filter(m => {
         if (String(m.id).includes('_user') || String(m.id).includes('_ai')) return false;
-        return m.extractedData?.intent === 'MODE_SUGGESTION' || String(m.content).startsWith('Error:') || isProcessing;
+        return m.extractedData?.intent === 'MODE_SUGGESTION' || m.extractedData?.intent === 'USAGE_LIMIT' || String(m.content).startsWith('Error:') || isProcessing || String(m.id).includes('_local_kept');
       });
 
       // Build messages from DB entries, grouping by raw_text for LOG_DATA_MULTI
@@ -142,12 +142,46 @@ export default function ChatPanel() {
       const { data, error } = await supabase.functions.invoke('extract', {
         body: { raw_text: text, mode: mode, dashboard_id: dashboardId }
       });
-      if (error) throw error;
+      
+      if (error) {
+        throw error;
+      }
 
-      await refreshData();
+      if (!data?.data && data?.extracted) {
+        // Backend didn't insert to DB, so we manually keep it in local state
+        const aiMsg = {
+          id: Date.now() + 1 + '_local_kept',
+          role: 'system',
+          extractedData: data.extracted,
+          originalText: text
+        };
+        setMessages(prev => prev.map(m => m.id === userMsgId ? { ...m, id: userMsgId + '_local_kept' } : m).concat(aiMsg));
+      } else {
+        await refreshData();
+      }
+
     } catch (err) {
       console.error('Extraction failed:', err);
-      setMessages(prev => [...prev, { id: Date.now()+1, role: 'system', content: `Error: ${err.message}` }]);
+      
+      // Attempt to parse custom Edge Function errors
+      let isUsageLimit = false;
+      let limitMessage = "You have reached your limit.";
+      
+      try {
+        // Supabase invoke errors usually wrap the Response in context if it was JSON
+        if (err.context && err.context.error_type === "USAGE_LIMIT") {
+          isUsageLimit = true;
+          limitMessage = err.context.message || limitMessage;
+        } else if (err.message && err.message.includes("USAGE_LIMIT")) {
+          isUsageLimit = true;
+        }
+      } catch (e) {}
+
+      if (isUsageLimit) {
+         setMessages(prev => [...prev, { id: Date.now() + 1 + '_local_kept', role: 'system', extractedData: { intent: 'USAGE_LIMIT', message: limitMessage } }]);
+      } else {
+         setMessages(prev => [...prev, { id: Date.now() + 1 + '_local_kept', role: 'system', content: `Error: ${err.message}` }]);
+      }
     } finally {
       setIsProcessing(false);
     }

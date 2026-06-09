@@ -212,8 +212,28 @@ export default function ChatMessage({ message, onUndo, onSwitchMode, onResendInM
       );
     }
 
-    if (intent === 'CONVERSATION') {
-      return <p style={{ fontSize: '0.925rem', color: 'var(--text-primary)' }}>{data.response}</p>;
+    if (intent === 'USAGE_LIMIT') {
+      return (
+        <div className="animate-fade-up" style={{
+          background: 'linear-gradient(135deg, rgba(201,153,42,0.1), rgba(201,153,42,0.05))',
+          border: '1px solid rgba(201,153,42,0.3)',
+          borderRadius: 'var(--radius-md)',
+          padding: '0.875rem 1rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.6rem'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <span style={{ fontSize: '0.85rem', color: 'var(--accent)', fontWeight: 600 }}>Usage Limit Reached</span>
+          </div>
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', lineHeight: '1.5' }}>{data.message}</span>
+        </div>
+      );
+    }
+
+    if (intent === 'CONVERSATION' || intent === 'VISUALIZATION_REQUEST') {
+      return <p style={{ fontSize: '0.925rem', color: 'var(--text-primary)' }}>{data.response || data.message}</p>;
     }
 
     if (intent === 'DATA_COMMAND') {

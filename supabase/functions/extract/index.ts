@@ -100,7 +100,13 @@ Deno.serve(async (req) => {
         .gte("created_at", twelveHoursAgo);
       
       if (!countError && count != null && count >= 10) {
-        throw new Error("USAGE_LIMIT_REACHED: You have reached your 10 message limit for this 12-hour period.");
+        return new Response(JSON.stringify({ 
+          error_type: "USAGE_LIMIT", 
+          message: "You have reached your 10 message limit for this 12-hour period." 
+        }), {
+          status: 429,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
     }
 
@@ -130,13 +136,7 @@ Deno.serve(async (req) => {
 The user is asking a general question, brainstorming, or clarifying business doubts.
 Respond conversationally, helpfully, and concisely. DO NOT generate JSON. Just return plain text.`;
 
-      const lowerText = raw_text.toLowerCase();
-      const appKeywords = ['columny', 'app', 'dashboard', 'how', 'what', 'why', 'undo', 'column', 'mode', 'build', 'consult', 'data'];
-      const needsContext = appKeywords.some(kw => lowerText.includes(kw));
-
-      if (needsContext) {
-        systemPrompt += "\n\n" + APP_CONTEXT;
-      }
+      systemPrompt += "\n\n" + APP_CONTEXT;
       
       if (profile?.company_context) {
         systemPrompt += `\n\nUser's Company Context: ${profile.company_context}`;
@@ -168,65 +168,139 @@ Respond conversationally, helpfully, and concisely. DO NOT generate JSON. Just r
       });
 
     } else if (mode === 'build') {
-      const systemPrompt = `You are the Columny Build Engine.
-The user is logging data for a dashboard called "${dashboardName || 'Default Dashboard'}".
-Context about what they're tracking here: "${dashboardContext || 'No specific context provided.'}"
-User's Company Context: "${profile?.company_context || 'Not provided.'}"
+      const classificationPrompt = `You are the Columny Build Engine router.
+Analyze the user's input and classify it into exactly ONE of these intents. Return ONLY the intent word. No formatting, no extra text.
 
-The user is providing data to log OR a command to alter the database schema (like rename/delete a column).
+INTENTS:
+- DATA_COMMAND: User explicitly asks to remove, delete, rename, or edit a column/schema field.
+- VISUALIZATION_REQUEST: User asks to create a chart, graph, or visualize data.
+- LOG_DATA: User is logging a single business update or record.
+- LOG_DATA_MULTI: Input contains a list where the same attribute types appear multiple times (e.g. multiple names, multiple companies, multiple categories). The test is: would a human put this in multiple rows of a spreadsheet? If yes -> LOG_DATA_MULTI.
+- CLARIFY: The input contains multiple categories/items and it is genuinely ambiguous whether they want 1 summary row or N separate rows.
+- CONVERSATION: The user is just chatting or asking a general question, not logging data or giving commands.
 
-Classify the text into ONE of these intents:
-1. "DATA_COMMAND": If the user explicitly asks to remove, delete, rename, edit, or add a column/schema field.
-2. "LOG_DATA": If the user is logging business updates, sales activities, etc. (single item).
-3. "LOG_DATA_MULTI": If the user describes multiple items of the same type (e.g. a category breakdown, a list of people, a region comparison).
-4. "CLARIFY": If the user's input contains multiple categories or items and it is ambiguous whether they want 1 summary row or N separate rows.
+If the user starts with "FORCE MULTI:" -> use LOG_DATA_MULTI.
+If the user starts with "FORCE SINGLE:" -> use LOG_DATA.
 
-Return ONLY a valid JSON payload. Do NOT wrap it in markdown.
+User Input: "${raw_text}"`;
 
-If the user explicitly starts their message with "FORCE MULTI:" or "FORCE SINGLE:", skip clarification and obey their instruction ("FORCE MULTI:" -> use LOG_DATA_MULTI, "FORCE SINGLE:" -> use LOG_DATA).
+      let intentResp = await callAI([
+        { role: "system", content: "You strictly return only one word." },
+        { role: "user", content: classificationPrompt }
+      ]);
+      let intent = intentResp.trim().toUpperCase();
+      
+      const validIntents = ["DATA_COMMAND", "VISUALIZATION_REQUEST", "LOG_DATA", "LOG_DATA_MULTI", "CLARIFY", "CONVERSATION"];
+      if (!validIntents.includes(intent)) intent = "LOG_DATA"; // fallback
 
-If DATA_COMMAND, return:
-{ "intent": "DATA_COMMAND", "action": "delete_column" | "rename_column" | "add_column" | "other", "target": "snake_case_column_name", "new_name": "New Display Name (if renaming)" }
+      if (intent === "VISUALIZATION_REQUEST") {
+        extractedData = { 
+          intent: "VISUALIZATION_REQUEST", 
+          message: "Charts are generated automatically from your logged data. Log some entries and the dashboard will visualize them for you." 
+        };
+        return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      
+      if (intent === "CLARIFY") {
+         extractedData = { 
+           intent: "CLARIFY", 
+           message: "I found multiple items here — should I log these as separate records or as one summary row?" 
+         };
+         return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
 
-If CLARIFY, return:
-{ "intent": "CLARIFY", "message": "I found N categories here — should I log these as N separate records or as one summary?" }
+      if (intent === "CONVERSATION") {
+         extractedData = { 
+           intent: "CONVERSATION", 
+           message: "I am in Build Mode. Switch to Consult Mode to chat, or provide data for me to log." 
+         };
+         return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
 
-CRITICAL RULE — DATA FORMAT:
-When the user's input describes multiple items of the same type (e.g. a category breakdown, a list of people, a region comparison), you MUST return an ARRAY of entry objects using the "LOG_DATA_MULTI" intent. 
-Each object must use IDENTICAL field names across all items.
-NEVER flatten a list into one wide object with fields like "electronics_revenue", "fashion_revenue" etc. 
-ALWAYS create separate rows: { "category": "Electronics", "revenue": 185782 }
-Input signal words: "breakdown", "by category", "per region", "each", list bullets (•), multiple lines with same pattern. When you see these → output array, not single object.
+      const existingSchemaJson = JSON.stringify(existingFields || []);
 
-If LOG_DATA or LOG_DATA_MULTI, enforce strict extraction rules based on the dashboard context:
-1. Use simple, snake_case keys.
-2. You will be given a list of existing field names from this workspace: [${existingKeysList}]. When extracting entities that semantically match an existing field, you MUST use the exact existing field name. Never create a new field name if an existing one fits.
-3. Do NOT nest objects.
-4. Extract ALL relevant details (e.g. names, requests, amounts, status, action taken, etc.) dynamically.
-5. Use the Dashboard Context to better name fields (e.g. $185782 becomes "revenue" not just "value", 45% becomes "share_pct" not just "percentage").
+      let extractionPrompt = `You are the Columny Data Extractor.
+The user is tracking: "${dashboardContext || 'General Business Data'}".
+Use this to name fields semantically. For example if context says 'sales calls', a dollar amount becomes deal_value, not amount. If context says 'email campaigns', a company name becomes recipient_company, not company.
 
-If LOG_DATA, return:
-{ 
-  "intent": "LOG_DATA", 
-  "entities": { "dynamic_key_1": "...", "dynamic_key_2": "..." } 
-}
+You MUST return a valid JSON payload. Do NOT wrap it in markdown block.
 
-If LOG_DATA_MULTI, return:
-{ 
-  "intent": "LOG_DATA_MULTI", 
-  "entries": [
-    { "dynamic_key_1": "...", "dynamic_key_2": "..." },
-    { "dynamic_key_1": "...", "dynamic_key_2": "..." }
-  ] 
-}`;
+EXISTING SCHEMA:
+${existingSchemaJson}
+Before creating any new field, check if the semantic meaning matches an existing field. If it does, use the existing field_name exactly, even if the wording differs.
+Example: If existing is "company" and user says "ACME Corp", use "company", do NOT create "company_name".
+
+User Input: "${raw_text}"
+`;
+
+      if (intent === "DATA_COMMAND") {
+        extractionPrompt += `
+Extract the column modification command.
+Return JSON format: { "intent": "DATA_COMMAND", "action": "delete_column" | "rename_column" | "add_column", "target": "snake_case_column_name", "new_name": "New Display Name (if renaming)" }
+
+Examples:
+User: "delete the company column"
+Expected Output: { "intent": "DATA_COMMAND", "action": "delete_column", "target": "company" }
+
+User: "rename action_taken to Activity"
+Expected Output: { "intent": "DATA_COMMAND", "action": "rename_column", "target": "action_taken", "new_name": "Activity" }
+`;
+      } else if (intent === "LOG_DATA_MULTI") {
+        extractionPrompt += `
+Extract multiple records. You MUST return an ARRAY of entry objects. Each object must use IDENTICAL field names across all items.
+Return JSON format: { "intent": "LOG_DATA_MULTI", "entries": [ { "key": "val" }, { "key": "val" } ] }
+
+Examples:
+User: "Electronics $185K, Fashion $123K, Home $62K"
+Expected Output: { "intent": "LOG_DATA_MULTI", "entries": [
+  { "category": "Electronics", "revenue": 185000 },
+  { "category": "Fashion", "revenue": 123000 },
+  { "category": "Home", "revenue": 62000 }
+] }
+
+User: "John from Apple wants 50 seats. Sarah from Google wants 20 seats."
+Expected Output: { "intent": "LOG_DATA_MULTI", "entries": [
+  { "name": "John", "company": "Apple", "seats_requested": 50 },
+  { "name": "Sarah", "company": "Google", "seats_requested": 20 }
+] }
+`;
+      } else {
+        extractionPrompt += `
+Extract a single record.
+Return JSON format: { "intent": "LOG_DATA", "entities": { "key": "val" } }
+
+Example:
+User: "Called Sarah at Stripe, she wants a demo"
+Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "person_name": "Sarah", "company": "Stripe", "request": "Wants a demo" } }
+`;
+      }
 
       let responseText = await callAI([
-        { role: "system", content: systemPrompt },
-        { role: "user", content: raw_text }
+        { role: "system", content: "You strictly output valid JSON." },
+        { role: "user", content: extractionPrompt }
       ]);
+      
       responseText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
-      extractedData = JSON.parse(responseText);
+      
+      try {
+        extractedData = JSON.parse(responseText);
+      } catch (parseErr) {
+        // Fallback Regex
+        const match = responseText.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+        if (match) {
+          try {
+            extractedData = JSON.parse(match[0]);
+          } catch (e2) {
+             extractedData = { intent: "CONVERSATION", message: "I had trouble understanding that. Could you rephrase it?" };
+             return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+        } else {
+           extractedData = { intent: "CONVERSATION", message: "I had trouble understanding that. Could you rephrase it?" };
+           return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+      }
 
+      // -- Database Operations --
       if (extractedData.intent === "DATA_COMMAND") {
         if (extractedData.action === "delete_column" && extractedData.target) {
           let delQuery = supabase.from("schema_registry").delete().eq("field_name", extractedData.target).eq("user_id", userId);
@@ -301,7 +375,7 @@ If LOG_DATA_MULTI, return:
         const { data, error: insertEntryError } = await supabase.from("entries").insert(insertPayloads).select();
         if (insertEntryError) throw insertEntryError;
         newEntry = data; // Array of entries
-      } else {
+      } else if (extractedData.intent === "LOG_DATA" || extractedData.intent === "DATA_COMMAND") {
         const { data, error: insertEntryError } = await supabase.from("entries").insert([{
           raw_text,
           extracted_data: extractedData,
