@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import ChatInput from './ChatInput';
 import ChatMessage from './ChatMessage';
 import { useSchemaContext } from '../../context/SchemaContext';
+import ConfirmModal from '../common/ConfirmModal';
+import { useUndo } from '../../context/UndoContext';
 
 export default function ChatPanel() {
   const { dashboardId, entries, refreshData } = useSchemaContext();
@@ -10,11 +12,18 @@ export default function ChatPanel() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const scrollRef = useRef(null);
   const chatInputRef = useRef(null);
+  const { triggerDeferredDelete } = useUndo();
+  const [isHiddenLocally, setIsHiddenLocally] = useState(false);
+
+  const [activeMode, setActiveMode] = useState(() => localStorage.getItem('columny_mode') || 'build');
+
+  const handleModeChange = (mode) => {
+    setActiveMode(mode);
+    localStorage.setItem('columny_mode', mode);
+  };
 
   const handleSwitchMode = (mode) => {
-    if (chatInputRef.current) {
-      chatInputRef.current.switchMode(mode);
-    }
+    handleModeChange(mode);
   };
 
   // Sync database entries to chat history
@@ -27,8 +36,12 @@ export default function ChatPanel() {
       });
 
       // Build messages from DB entries, grouping by raw_text for LOG_DATA_MULTI
+      const displayEntries = isHiddenLocally ? [] : entries.filter(e => {
+        const entryMode = e.extracted_data?._mode || (e.extracted_data?.intent === 'CONVERSATION' ? 'consult' : 'build');
+        return entryMode === activeMode;
+      });
       const dbMessages = [];
-      const reversed = [...entries].reverse();
+      const reversed = [...displayEntries].reverse();
       const groups = [];
 
       reversed.forEach(entry => {
@@ -76,7 +89,7 @@ export default function ChatPanel() {
 
       return [...dbMessages, ...localMessages];
     });
-  }, [entries, isProcessing]);
+  }, [entries, isProcessing, activeMode, isHiddenLocally]);
 
   const handleSpecificUndo = async (entryId, extractedData) => {
     const updatedData = { ...(extractedData || {}), is_undone: true };
@@ -202,18 +215,30 @@ export default function ChatPanel() {
   };
 
   const handleUndo = async () => {
-    if (entries.length === 0) return;
-    const latestEntry = entries[0];
-    const { supabase } = await import('../../lib/supabaseClient');
-    await supabase.from('entries').delete().eq('id', latestEntry.id);
-    await refreshData();
+    const latestBuildEntry = entries.find(e => {
+      const entryMode = e.extracted_data?._mode || (e.extracted_data?.intent === 'CONVERSATION' ? 'consult' : 'build');
+      return entryMode === 'build';
+    });
+    if (!latestBuildEntry) return;
+    if (latestBuildEntry.extracted_data?.intent === 'DATA_COMMAND') return;
+    if (latestBuildEntry.extracted_data?.is_undone) return;
+
+    await handleSpecificUndo(latestBuildEntry.id, latestBuildEntry.extracted_data);
   };
 
-  const handleClearChat = async () => {
-    const { supabase } = await import('../../lib/supabaseClient');
-    await supabase.from('entries').delete().not('id', 'is', null);
+  const confirmClearChat = () => {
     setShowClearConfirm(false);
-    await refreshData();
+    triggerDeferredDelete(
+      'Cleared Chat History',
+      () => setIsHiddenLocally(true),
+      async () => {
+        const { supabase } = await import('../../lib/supabaseClient');
+        await supabase.from('entries').delete().not('id', 'is', null);
+        setIsHiddenLocally(false);
+        await refreshData();
+      },
+      () => setIsHiddenLocally(false)
+    );
   };
 
   return (
@@ -234,16 +259,9 @@ export default function ChatPanel() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
           </button>
           
-          {showClearConfirm ? (
-            <div className="animate-fade-up" style={{ position: 'absolute', right: 0, top: '100%', marginTop: '0.25rem', background: 'var(--bg-surface-elevated)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-md)', padding: '0.5rem', display: 'flex', gap: '0.5rem', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 20 }}>
-              <button onClick={handleClearChat} style={{ background: 'var(--danger)', color: 'white', border: 'none', padding: '0.3rem 0.6rem', borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>Confirm</button>
-              <button onClick={() => setShowClearConfirm(false)} style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--glass-border)', padding: '0.3rem 0.6rem', borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', cursor: 'pointer', transition: 'all 0.2s' }} onMouseOver={e => e.currentTarget.style.color = 'var(--text-primary)'} onMouseOut={e => e.currentTarget.style.color = 'var(--text-secondary)'}>Cancel</button>
-            </div>
-          ) : (
             <button onClick={() => setShowClearConfirm(true)} title="Clear Chat" style={{ background: 'transparent', border: '1px solid transparent', color: 'var(--text-muted)', padding: '0.4rem', borderRadius: 'var(--radius-sm)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }} onMouseOver={e => {e.currentTarget.style.color = 'var(--danger)'; e.currentTarget.style.background = 'rgba(139, 58, 58, 0.1)'}} onMouseOut={e => {e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'}}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
             </button>
-          )}
         </div>
       </div>
       
@@ -269,7 +287,16 @@ export default function ChatPanel() {
             </div>
           </div>
         ) : (
-          messages.map(msg => <ChatMessage key={msg.id} message={msg} onUndo={handleSpecificUndo} onSwitchMode={handleSwitchMode} onResendInMode={handleResendInMode} onDismissSuggestion={handleDismissSuggestion} onResendClarification={handleResendClarification} />)
+          messages.map(msg => {
+            const latestBuildEntry = entries.find(e => {
+              const entryMode = e.extracted_data?._mode || (e.extracted_data?.intent === 'CONVERSATION' ? 'consult' : 'build');
+              return entryMode === 'build';
+            });
+            const isLatestBuild = latestBuildEntry && msg.entryId === latestBuildEntry.id;
+            const isSchemaEdit = msg.extractedData?.intent === 'DATA_COMMAND';
+            const isUndoable = isLatestBuild && !isSchemaEdit;
+            return <ChatMessage key={msg.id} message={msg} isUndoable={isUndoable} onUndo={handleSpecificUndo} onSwitchMode={handleSwitchMode} onResendInMode={handleResendInMode} onDismissSuggestion={handleDismissSuggestion} onResendClarification={handleResendClarification} />;
+          })
         )}
         
         {isProcessing && (
@@ -280,7 +307,17 @@ export default function ChatPanel() {
         )}
       </div>
 
-      <ChatInput ref={chatInputRef} onSend={handleSend} disabled={isProcessing} />
+      <ChatInput ref={chatInputRef} onSend={handleSend} disabled={isProcessing} mode={activeMode} onModeChange={handleModeChange} />
+
+      {showClearConfirm && (
+        <ConfirmModal 
+          title="Clear Chat History"
+          message="Are you sure you want to delete all entries in this chat? This cannot be undone."
+          confirmText="Clear Chat"
+          onConfirm={confirmClearChat}
+          onCancel={() => setShowClearConfirm(false)}
+        />
+      )}
     </div>
   );
 }

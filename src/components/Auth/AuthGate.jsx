@@ -15,6 +15,10 @@ export default function AuthGate({ children }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
+    }).catch(err => {
+      console.error("Auth session error:", err);
+      setSession(null);
+      setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {

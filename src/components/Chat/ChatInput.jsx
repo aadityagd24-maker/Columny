@@ -1,26 +1,18 @@
 import React, { useState, forwardRef, useImperativeHandle, useRef, useEffect } from 'react';
 
-const ChatInput = forwardRef(function ChatInput({ onSend, disabled }, ref) {
+const ChatInput = forwardRef(function ChatInput({ onSend, disabled, mode, onModeChange }, ref) {
   const [input, setInput] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const textareaRef = useRef(null);
-  const [activeMode, setActiveMode] = useState(() => {
-    return localStorage.getItem('columny_mode') || 'build';
-  });
-
-  const handleModeChange = (mode) => {
-    setActiveMode(mode);
-    localStorage.setItem('columny_mode', mode);
-  };
 
   useImperativeHandle(ref, () => ({
-    switchMode: handleModeChange
+    switchMode: (newMode) => onModeChange && onModeChange(newMode)
   }));
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (input.trim() && !disabled) {
-      onSend(input.trim(), activeMode);
+      onSend(input.trim(), mode);
       setInput('');
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
@@ -55,12 +47,12 @@ const ChatInput = forwardRef(function ChatInput({ onSend, disabled }, ref) {
       }}>
         <button
           type="button"
-          onClick={() => handleModeChange('consult')}
+          onClick={() => onModeChange && onModeChange('consult')}
           style={{
             padding: '0.4rem 1rem',
-            background: activeMode === 'consult' ? 'var(--bg-surface)' : 'transparent',
-            color: activeMode === 'consult' ? 'var(--accent)' : 'var(--text-secondary)',
-            border: activeMode === 'consult' ? '1px solid var(--glass-border-hover)' : '1px solid transparent',
+            background: mode === 'consult' ? 'var(--bg-surface)' : 'transparent',
+            color: mode === 'consult' ? 'var(--accent)' : 'var(--text-secondary)',
+            border: mode === 'consult' ? '1px solid var(--glass-border-hover)' : '1px solid transparent',
             borderRadius: 'var(--radius-sm)',
             cursor: 'pointer',
             transition: 'all 0.2s ease',
@@ -74,12 +66,12 @@ const ChatInput = forwardRef(function ChatInput({ onSend, disabled }, ref) {
         </button>
         <button
           type="button"
-          onClick={() => handleModeChange('build')}
+          onClick={() => onModeChange && onModeChange('build')}
           style={{
             padding: '0.4rem 1rem',
-            background: activeMode === 'build' ? 'var(--bg-surface)' : 'transparent',
-            color: activeMode === 'build' ? 'var(--accent)' : 'var(--text-secondary)',
-            border: activeMode === 'build' ? '1px solid var(--glass-border-hover)' : '1px solid transparent',
+            background: mode === 'build' ? 'var(--bg-surface)' : 'transparent',
+            color: mode === 'build' ? 'var(--accent)' : 'var(--text-secondary)',
+            border: mode === 'build' ? '1px solid var(--glass-border-hover)' : '1px solid transparent',
             borderRadius: 'var(--radius-sm)',
             cursor: 'pointer',
             transition: 'all 0.2s ease',
@@ -104,7 +96,7 @@ const ChatInput = forwardRef(function ChatInput({ onSend, disabled }, ref) {
           alignItems: 'center',
           pointerEvents: 'none'
         }}>
-          {activeMode === 'build' ? (
+          {mode === 'build' ? (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
           ) : (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
@@ -121,7 +113,7 @@ const ChatInput = forwardRef(function ChatInput({ onSend, disabled }, ref) {
             }
           }}
           disabled={disabled}
-          placeholder={activeMode === 'build' ? "Type what happened..." : "Ask me anything..."}
+          placeholder={mode === 'build' ? "Type what happened..." : "Ask me anything..."}
           rows={1}
           style={{
             width: '100%',

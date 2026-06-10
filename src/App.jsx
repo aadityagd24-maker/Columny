@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { UndoProvider } from './context/UndoContext';
 import AuthGate from './components/Auth/AuthGate';
 import AppShell from './components/Layout/AppShell';
 import HomePage from './components/Home/HomePage';
@@ -6,6 +7,7 @@ import ProfilePage from './components/Profile/ProfilePage';
 import OnboardingFlow from './components/Onboarding/OnboardingFlow';
 import { SchemaProvider } from './context/SchemaContext';
 import { useProfile } from './hooks/useProfile';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 function AppContent() {
   const { profile, loading } = useProfile();
@@ -64,11 +66,16 @@ function AppContent() {
   );
 }
 
+
 function App() {
   return (
-    <AuthGate>
-      <AppContent />
-    </AuthGate>
+    <ErrorBoundary>
+      <UndoProvider>
+        <AuthGate>
+          <AppContent />
+        </AuthGate>
+      </UndoProvider>
+    </ErrorBoundary>
   );
 }
 

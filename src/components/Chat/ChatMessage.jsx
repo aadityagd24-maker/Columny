@@ -1,18 +1,15 @@
 import React, { useState, useEffect } from 'react';
 
-export default function ChatMessage({ message, onUndo, onSwitchMode, onResendInMode, onDismissSuggestion, onResendClarification }) {
+export default function ChatMessage({ message, isUndoable, onUndo, onSwitchMode, onResendInMode, onDismissSuggestion, onResendClarification }) {
   const isUser = message.role === 'user';
   const [contextMenu, setContextMenu] = useState(null);
 
   const handleContextMenu = (e) => {
     if (isUser) {
-      const intent = message.extractedData?.intent;
       const isUndone = message.extractedData?.is_undone;
-      const isCommand = message.content.startsWith('/');
-      const isLog = intent === 'LOG_DATA' || !intent;
       
-      // Allow undo only for standard data logs that haven't been undone
-      if (isLog && !isCommand && !isUndone) {
+      // Allow undo only if the parent passed isUndoable
+      if (isUndoable && !isUndone) {
         e.preventDefault();
         setContextMenu({ x: e.pageX, y: e.pageY });
       }
@@ -48,7 +45,7 @@ export default function ChatMessage({ message, onUndo, onSwitchMode, onResendInM
           textDecoration: isUndone ? 'line-through' : 'none',
           opacity: isUndone ? 0.6 : 1,
           position: 'relative',
-          cursor: (!isCommand && !isUndone) ? 'context-menu' : 'default'
+          cursor: (isUndoable && !isUndone) ? 'context-menu' : 'default'
         }}>
           {isUndone && (
             <span style={{ position: 'absolute', top: '-8px', right: '-8px', background: 'var(--bg-base)', border: '1px solid var(--text-tertiary)', color: 'var(--text-secondary)', fontSize: '0.6rem', padding: '0.1rem 0.4rem', borderRadius: '4px', textDecoration: 'none', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Undone</span>
@@ -232,8 +229,17 @@ export default function ChatMessage({ message, onUndo, onSwitchMode, onResendInM
       );
     }
 
-    if (intent === 'CONVERSATION' || intent === 'VISUALIZATION_REQUEST') {
+    if (intent === 'CONVERSATION' || intent === 'VISUALIZATION_REQUEST' || intent === 'UNDO_ACTION' || intent === 'GENERATE_INSIGHTS') {
       return <p style={{ fontSize: '0.925rem', color: 'var(--text-primary)' }}>{data.response || data.message}</p>;
+    }
+
+    if (intent === 'UNSUPPORTED_REQUEST') {
+      return (
+        <div style={{ display: 'flex', gap: '0.5rem', color: 'var(--text-secondary)' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+          <p style={{ fontSize: '0.925rem', margin: 0 }}>{data.message}</p>
+        </div>
+      );
     }
 
     if (intent === 'DATA_COMMAND') {

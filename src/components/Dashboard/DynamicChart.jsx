@@ -25,24 +25,34 @@ function analyzeFields(fields, entries) {
   const textFields = fields.filter(f => f.field_type === 'text');
   const numericFields = fields.filter(f => f.field_type === 'number');
 
+  // Helper for numeric analysis
   const numAnalysis = numericFields.map(numField => {
     const key = numField.field_name;
     const label = numField.display_name || numField.field_name;
     const numLower = key.toLowerCase();
-    const isSumWords = ['revenue', 'sales', 'amount', 'total', 'units', 'count', 'quantity', 'price', 'earnings', 'income', 'cost'].some(w => numLower.includes(w));
-    const aggType = isSumWords ? 'sum' : 'average';
+    
+    // Scoring
+    const preferredWords = ['revenue', 'sales', 'amount', 'total', 'units', 'seats', 'value', 'price'];
+    const sumWords = ['revenue', 'sales', 'amount', 'total', 'value', 'price', 'income', 'cost'];
     const isMoney = ['revenue', 'sales', 'amount', 'price', 'value', 'earnings', 'income', 'cost'].some(w => numLower.includes(w));
-    // Prioritize relevant numeric fields
-    let score = isSumWords ? 2 : 1;
+    
+    const isPreferred = preferredWords.some(w => numLower.includes(w));
+    const isSum = sumWords.some(w => numLower.includes(w));
+    const aggType = isSum ? 'sum' : 'average';
+    
+    let score = isPreferred ? 2 : 1;
     if (isMoney) score += 1;
+    
     return { key, label, aggType, isMoney, score };
   }).sort((a, b) => b.score - a.score);
 
+  // Helper for text analysis (Step 1)
   const textAnalysis = textFields.map(tf => {
     const key = tf.field_name;
     const label = tf.display_name || tf.field_name;
     const counts = {};
     let validCount = 0;
+    
     flat.forEach(row => {
       const val = row[key];
       if (val != null && val !== '') {
@@ -53,17 +63,17 @@ function analyzeFields(fields, entries) {
 
     const uniqueValues = Object.keys(counts);
     const uniqueCount = uniqueValues.length;
+    const uniquenessRatio = uniqueCount / (validCount || 1);
     
     let cardinality = 'high';
-    if (uniqueCount >= 2 && uniqueCount <= 3) cardinality = 'low';
-    else if (uniqueCount >= 4 && uniqueCount <= 10) cardinality = 'mid';
+    if (uniqueCount >= 2 && uniqueCount <= 3 && uniquenessRatio <= 0.75) {
+      cardinality = 'low';
+    } else if (uniqueCount >= 4 && uniqueCount <= 12 && uniquenessRatio <= 0.75) {
+      cardinality = 'mid';
+    }
 
     return { key, label, counts, uniqueValues, uniqueCount, validCount, cardinality };
   }).filter(t => t.validCount > 0 && t.cardinality !== 'high');
-
-  const configs = [];
-  const usedTextFields = new Set();
-  const usedNumericFields = new Set();
 
   const aggregateNumeric = (catKey, numAnalysisInfo) => {
     const agg = {};
@@ -86,24 +96,32 @@ function analyzeFields(fields, entries) {
     return Object.keys(countsObj).map(k => ({ name: k, value: countsObj[k] })).sort((a, b) => b.value - a.value);
   };
 
-  const isValidCountData = (data) => {
+  const isDataMeaningful = (data) => {
     if (data.length < 2) return false;
     const vals = data.map(d => d.value);
-    const maxCount = Math.max(...vals);
-    const minCount = Math.min(...vals);
-    return !(maxCount === minCount || maxCount === 1);
+    const maxVal = Math.max(...vals);
+    const minVal = Math.min(...vals);
+    // Kill if all equal, or if aggregation is just flat 0
+    if (maxVal === minVal) return false;
+    if (maxVal === 0 && minVal === 0) return false;
+    return true;
   };
 
+  const configs = [];
+  const usedTextFields = new Set();
+  const usedNumFields = new Set();
+
   const midFields = textAnalysis.filter(t => t.cardinality === 'mid').sort((a, b) => b.uniqueCount - a.uniqueCount);
-  
-  // STEP 1 - Best BAR field
+  const lowFields = textAnalysis.filter(t => t.cardinality === 'low').sort((a, b) => b.uniqueCount - a.uniqueCount);
+
+  // Priority 1 — Best BAR chart
   if (midFields.length > 0) {
     const bestBarField = midFields[0];
     if (numAnalysis.length > 0) {
       const bestNumField = numAnalysis[0];
       const aggData = aggregateNumeric(bestBarField.key, bestNumField);
-      if (aggData.length >= 2) {
-        const titlePrefix = bestNumField.aggType === 'sum' ? 'Total' : 'Average';
+      if (isDataMeaningful(aggData)) {
+        const titlePrefix = bestNumField.aggType === 'sum' ? 'Total' : 'Avg';
         configs.push({
           chartType: 'bar',
           title: `${titlePrefix} ${bestNumField.label.replace(/_/g, ' ')} by ${bestBarField.label.replace(/_/g, ' ')}`,
@@ -114,11 +132,11 @@ function analyzeFields(fields, entries) {
           isMoney: bestNumField.isMoney
         });
         usedTextFields.add(bestBarField.key);
-        usedNumericFields.add(bestNumField.key);
+        usedNumFields.add(bestNumField.key);
       }
     } else {
       const countData = getCountData(bestBarField.counts);
-      if (isValidCountData(countData)) {
+      if (isDataMeaningful(countData)) {
         configs.push({
           chartType: 'bar',
           title: `Record Count by ${bestBarField.label.replace(/_/g, ' ')}`,
@@ -133,31 +151,31 @@ function analyzeFields(fields, entries) {
     }
   }
 
-  // STEP 2 - Best PIE field
-  const lowFields = textAnalysis.filter(t => t.cardinality === 'low' && !usedTextFields.has(t.key)).sort((a, b) => b.uniqueCount - a.uniqueCount);
-  if (lowFields.length > 0) {
-    const bestPieField = lowFields[0];
+  // Priority 2 — PIE/DONUT chart
+  const availableLowFields = lowFields.filter(f => !usedTextFields.has(f.key));
+  if (availableLowFields.length > 0) {
+    const bestPieField = availableLowFields[0];
+    const availableNumFields = numAnalysis.filter(f => !usedNumFields.has(f.key));
+    
     let pieData = null;
     let title = '';
     let subtitle = '';
     let isMoney = false;
 
-    if (numAnalysis.length > 0) {
-      const bestNumField = numAnalysis[0]; // always use the best numeric field for pie if it exists
+    if (availableNumFields.length > 0) {
+      const bestNumField = availableNumFields[0];
       pieData = aggregateNumeric(bestPieField.key, bestNumField);
       isMoney = bestNumField.isMoney;
       title = `${bestNumField.label.replace(/_/g, ' ')} by ${bestPieField.label.replace(/_/g, ' ')}`;
-      subtitle = `${bestNumField.aggType === 'sum' ? 'Sum' : 'Average'} of ${bestNumField.label.toLowerCase()} · grouped by ${bestPieField.label.toLowerCase()}`;
+      subtitle = `Sum of ${bestNumField.label.toLowerCase()} · grouped by ${bestPieField.label.toLowerCase()}`;
+      usedNumFields.add(bestNumField.key);
     } else {
-      const countData = getCountData(bestPieField.counts);
-      if (isValidCountData(countData)) {
-        pieData = countData;
-        title = `Record Count by ${bestPieField.label.replace(/_/g, ' ')}`;
-        subtitle = `Count of entries · grouped by ${bestPieField.label.toLowerCase()}`;
-      }
+      pieData = getCountData(bestPieField.counts);
+      title = `${bestPieField.label.replace(/_/g, ' ')} Distribution`;
+      subtitle = `Count of entries · grouped by ${bestPieField.label.toLowerCase()}`;
     }
 
-    if (pieData && pieData.length >= 2) {
+    if (pieData && isDataMeaningful(pieData)) {
       configs.push({
         chartType: 'pie',
         title,
@@ -171,18 +189,18 @@ function analyzeFields(fields, entries) {
     }
   }
 
-  // STEP 3 - Secondary BAR field
+  // Priority 3 — Secondary BAR chart
   if (configs.length < 3) {
-    const remainingMidFields = midFields.filter(t => !usedTextFields.has(t.key));
-    const remainingNumFields = numAnalysis.filter(n => !usedNumericFields.has(n.key));
-    
-    if (remainingMidFields.length > 0) {
-      const secBarField = remainingMidFields[0];
-      if (remainingNumFields.length > 0) {
-        const secNumField = remainingNumFields[0];
+    const availableMidFields = midFields.filter(f => !usedTextFields.has(f.key));
+    if (availableMidFields.length > 0) {
+      const secBarField = availableMidFields[0];
+      const availableNumFields = numAnalysis.filter(f => !usedNumFields.has(f.key));
+      
+      if (availableNumFields.length > 0) {
+        const secNumField = availableNumFields[0];
         const aggData = aggregateNumeric(secBarField.key, secNumField);
-        if (aggData.length >= 2) {
-          const titlePrefix = secNumField.aggType === 'sum' ? 'Total' : 'Average';
+        if (isDataMeaningful(aggData)) {
+          const titlePrefix = secNumField.aggType === 'sum' ? 'Total' : 'Avg';
           configs.push({
             chartType: 'bar',
             title: `${titlePrefix} ${secNumField.label.replace(/_/g, ' ')} by ${secBarField.label.replace(/_/g, ' ')}`,
@@ -193,10 +211,11 @@ function analyzeFields(fields, entries) {
             isMoney: secNumField.isMoney
           });
           usedTextFields.add(secBarField.key);
+          usedNumFields.add(secNumField.key);
         }
       } else {
         const countData = getCountData(secBarField.counts);
-        if (isValidCountData(countData)) {
+        if (isDataMeaningful(countData)) {
           configs.push({
             chartType: 'bar',
             title: `Record Count by ${secBarField.label.replace(/_/g, ' ')}`,
@@ -212,7 +231,7 @@ function analyzeFields(fields, entries) {
     }
   }
 
-  return configs.slice(0, 3);
+  return configs;
 }
 
 const cardStyle = {
@@ -399,8 +418,64 @@ function renderLineChart(config) {
   );
 }
 
-export default function DynamicChart({ fields, entries }) {
-  const chartConfigs = useMemo(() => analyzeFields(fields, entries), [fields, entries]);
+export default function DynamicChart({ fields, entries, aiChartConfigs }) {
+  const chartConfigs = useMemo(() => {
+    if (aiChartConfigs && Array.isArray(aiChartConfigs) && aiChartConfigs.length > 0) {
+      // Map AI properties to internal properties if needed, or assume AI matches
+      // AI returns type (bar/donut), title, xField/groupField, yField/valueField
+      // We need to map this to format renderBarChart/PieChart expects:
+      // chartType: 'bar'/'pie', title: string, data: array of {name, value}, isMoney
+      
+      return aiChartConfigs.map(aiConfig => {
+        const catKey = aiConfig.xField || aiConfig.groupField;
+        const valKey = aiConfig.yField || aiConfig.valueField;
+        const aggType = aiConfig.aggregation || 'sum';
+        
+        const data = [];
+        const isMoney = ['revenue', 'sales', 'amount', 'price', 'value', 'earnings', 'income', 'cost'].some(w => (valKey || '').toLowerCase().includes(w));
+        
+        if (valKey === 'count' || !valKey) {
+          const counts = {};
+          entries.forEach(row => {
+            const rowData = row.extracted_data?.intent === 'LOG_DATA' ? row.extracted_data.entities : row.extracted_data;
+            const catVal = (rowData || {})[catKey];
+            if (catVal != null && catVal !== '') {
+              counts[catVal] = (counts[catVal] || 0) + 1;
+            }
+          });
+          Object.keys(counts).forEach(k => data.push({ name: k, value: counts[k] }));
+        } else {
+          const agg = {};
+          entries.forEach(row => {
+            const rowData = row.extracted_data?.intent === 'LOG_DATA' ? row.extracted_data.entities : row.extracted_data;
+            const catVal = (rowData || {})[catKey];
+            const numVal = parseFloat((rowData || {})[valKey]);
+            if (catVal == null || catVal === '' || isNaN(numVal)) return;
+            if (!agg[catVal]) agg[catVal] = { sum: 0, count: 0 };
+            agg[catVal].sum += numVal;
+            agg[catVal].count += 1;
+          });
+          Object.keys(agg).forEach(k => {
+            const value = aggType === 'sum' ? agg[k].sum : (agg[k].sum / agg[k].count);
+            data.push({ name: k, value });
+          });
+        }
+        
+        data.sort((a, b) => b.value - a.value);
+        
+        return {
+          chartType: aiConfig.type === 'donut' ? 'pie' : aiConfig.type,
+          title: aiConfig.title,
+          subtitle: `AI generated visualization`,
+          data,
+          dataKey: 'value',
+          nameKey: 'name',
+          isMoney
+        };
+      }).filter(c => c.data.length >= 2 && Math.max(...c.data.map(d=>d.value)) > 0);
+    }
+    return analyzeFields(fields, entries);
+  }, [fields, entries, aiChartConfigs]);
 
   if (!chartConfigs || chartConfigs.length === 0) {
     return (

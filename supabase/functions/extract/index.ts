@@ -58,6 +58,90 @@ The app has two panels:
 - If asked about any of the above, respond: "I'm here to help you use Columny effectively! That information is part of our internal systems and isn't something I can share. Is there anything else about using the app I can help with?"
 `;
 
+async function generateInsightsAndCharts(dashboard_id: string, userId: string, supabase: any, preferredChart?: string) {
+  try {
+    // 1. Fetch current schema and sample data
+    const { data: fields } = await supabase.from("schema_registry").select("field_name, field_type").eq("dashboard_id", dashboard_id);
+    const { data: entries } = await supabase.from("entries")
+      .select("extracted_data")
+      .eq("dashboard_id", dashboard_id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (!fields || fields.length === 0 || !entries || entries.length === 0) return;
+
+    const fieldsString = fields.map(f => `${f.field_name}: ${f.field_type}`).join(", ");
+    const sampleData = entries.map(e => e.extracted_data?.intent === 'LOG_DATA' ? e.extracted_data.entities : e.extracted_data);
+
+    // 2. AI Chart Suggestions
+    let chartPrompt = `You are a data visualization advisor. Given these data fields and sample records,
+suggest the 2-3 most insightful charts to show.
+
+Fields: ${fieldsString}
+Sample data: ${JSON.stringify(sampleData)}
+
+Return ONLY a JSON array of chart configs. No markdown. No explanation.
+Example format:
+[
+  { "type": "bar", "title": "Total Revenue by Category", "xField": "category", "yField": "revenue", "aggregation": "sum" },
+  { "type": "donut", "title": "Sales by Channel", "groupField": "channel", "valueField": "revenue", "aggregation": "sum" },
+  { "type": "bar", "title": "Units by Region", "xField": "region", "yField": "units", "aggregation": "sum" }
+]
+
+Valid types: "bar", "donut"
+Valid aggregations: "sum", "count", "average"
+xField and groupField must be text fields. yField and valueField must be numeric fields or "count".
+Return maximum 3 charts. Return empty array [] if no meaningful visualization is possible.`;
+
+    if (preferredChart) {
+      chartPrompt += `\n\nThe user explicitly requested a ${preferredChart} chart. Make sure at least one of your suggested charts is of type ${preferredChart} if the data supports it.`;
+    }
+
+    const chartResp = await callAI([
+      { role: "system", content: "You strictly return valid JSON arrays." },
+      { role: "user", content: chartPrompt }
+    ]);
+
+    let chartConfigs = null;
+    try {
+      const cleanedResp = chartResp.replace(/```json/gi, '').replace(/```/g, '').trim();
+      chartConfigs = JSON.parse(cleanedResp);
+    } catch (e) {
+      console.error("Failed to parse chart configs", e);
+    }
+
+    if (chartConfigs && Array.isArray(chartConfigs)) {
+      await supabase.from("dashboards").update({ chart_config: chartConfigs }).eq("id", dashboard_id);
+    }
+
+    // 3. AI Key Insights
+    // For insights, we aggregate basic values so the AI can write specific numbers.
+    const insightPrompt = `You are a business analyst. Given this dashboard data, write 3-5 bullet point insights 
+in plain English. Each bullet should be specific, actionable, and reference actual data values.
+Focus on: what's performing best, what's underperforming, any notable patterns or risks.
+
+Data summary:
+Fields: ${fieldsString}
+Sample data: ${JSON.stringify(sampleData)}
+
+Return ONLY the bullet points as a plain text string.
+Each bullet starts with "•". No headers. No markdown. No JSON.
+Keep each bullet to one sentence. Be specific with numbers.`;
+
+    const insightResp = await callAI([
+      { role: "system", content: "You are a concise business analyst." },
+      { role: "user", content: insightPrompt }
+    ]);
+
+    if (insightResp) {
+      await supabase.from("dashboards").update({ key_insights: insightResp.trim() }).eq("id", dashboard_id);
+    }
+
+  } catch (err) {
+    console.error("Background AI error:", err);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -148,7 +232,7 @@ Respond conversationally, helpfully, and concisely. DO NOT generate JSON. Just r
       ]);
 
       const trimmed = responseText.trim();
-      extractedData = { intent: "CONVERSATION", response: trimmed };
+      extractedData = { intent: "CONVERSATION", response: trimmed, _mode: "consult" };
 
       const { data: newEntry, error: insertEntryError } = await supabase
         .from("entries")
@@ -176,8 +260,14 @@ INTENTS:
 - VISUALIZATION_REQUEST: User asks to create a chart, graph, or visualize data.
 - LOG_DATA: User is logging a single business update or record.
 - LOG_DATA_MULTI: Input contains a list where the same attribute types appear multiple times (e.g. multiple names, multiple companies, multiple categories). The test is: would a human put this in multiple rows of a spreadsheet? If yes -> LOG_DATA_MULTI.
+- CHART_PREFERENCE: User is logging data AND explicitly specifying how they want it visualized (e.g. "log this as a bar chart", "show this in a pie chart", "I want this as a donut").
+- UNSUPPORTED_REQUEST: User is requesting a feature, chart type, or capability that doesn't exist in the app. Examples: scatter plots, candlestick charts, custom infographics, data exports, PDF reports, Slack integration, email notifications.
+- UNDO_ACTION: User explicitly asks to undo, revert, or remove the last logged entry.
+- GENERATE_INSIGHTS: User asks to load, refresh, create, or show key insights, charts, or analysis for the current page/dashboard. (e.g. "load the key insights", "generate insights", "refresh charts").
 - CLARIFY: The input contains multiple categories/items and it is genuinely ambiguous whether they want 1 summary row or N separate rows.
 - CONVERSATION: The user is just chatting or asking a general question, not logging data or giving commands.
+
+If the user mentions "insights" or "load insights", YOU MUST CHOOSE GENERATE_INSIGHTS.
 
 If the user starts with "FORCE MULTI:" -> use LOG_DATA_MULTI.
 If the user starts with "FORCE SINGLE:" -> use LOG_DATA.
@@ -190,34 +280,56 @@ User Input: "${raw_text}"`;
       ]);
       let intent = intentResp.trim().toUpperCase();
       
-      const validIntents = ["DATA_COMMAND", "VISUALIZATION_REQUEST", "LOG_DATA", "LOG_DATA_MULTI", "CLARIFY", "CONVERSATION"];
+      const validIntents = ["DATA_COMMAND", "VISUALIZATION_REQUEST", "LOG_DATA", "LOG_DATA_MULTI", "CHART_PREFERENCE", "UNSUPPORTED_REQUEST", "UNDO_ACTION", "GENERATE_INSIGHTS", "CLARIFY", "CONVERSATION"];
       if (!validIntents.includes(intent)) intent = "LOG_DATA"; // fallback
 
-      if (intent === "VISUALIZATION_REQUEST") {
+      const skipExtractionIntents = ["GENERATE_INSIGHTS", "UNDO_ACTION", "VISUALIZATION_REQUEST", "CLARIFY", "CONVERSATION"];
+
+      if (intent === "GENERATE_INSIGHTS") {
+        if (dashboard_id) {
+          await generateInsightsAndCharts(dashboard_id, userId, supabase).catch(console.error);
+        }
+        extractedData = { intent: "GENERATE_INSIGHTS", message: "I've analyzed your data and updated the dashboard's charts and key insights!" };
+      } else if (intent === "UNDO_ACTION") {
+        let message = "I couldn't find a recent entry to undo.";
+        if (dashboard_id) {
+          const { data: lastEntry } = await supabase.from("entries")
+            .select("id, extracted_data")
+            .eq("dashboard_id", dashboard_id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single();
+            
+          if (lastEntry) {
+            const lastIntent = lastEntry.extracted_data?.intent;
+            if (lastIntent === 'DATA_COMMAND') {
+              message = "I cannot undo schema edits (like renaming or deleting columns) at this time. You'll need to make those changes manually.";
+            } else {
+              await supabase.from("entries").update({ extracted_data: { ...lastEntry.extracted_data, is_undone: true } }).eq("id", lastEntry.id);
+              message = "Done. I've undone the last logged action.";
+            }
+          }
+        }
+        extractedData = { intent: "UNDO_ACTION", message };
+      } else if (intent === "VISUALIZATION_REQUEST") {
         extractedData = { 
           intent: "VISUALIZATION_REQUEST", 
           message: "Charts are generated automatically from your logged data. Log some entries and the dashboard will visualize them for you." 
         };
-        return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-      
-      if (intent === "CLARIFY") {
+      } else if (intent === "CLARIFY") {
          extractedData = { 
            intent: "CLARIFY", 
            message: "I found multiple items here — should I log these as separate records or as one summary row?" 
          };
-         return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      if (intent === "CONVERSATION") {
+      } else if (intent === "CONVERSATION") {
          extractedData = { 
            intent: "CONVERSATION", 
            message: "I am in Build Mode. Switch to Consult Mode to chat, or provide data for me to log." 
          };
-         return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      const existingSchemaJson = JSON.stringify(existingFields || []);
+      if (!skipExtractionIntents.includes(intent)) {
+        const existingSchemaJson = JSON.stringify(existingFields || []);
 
       let extractionPrompt = `You are the Columny Data Extractor.
 The user is tracking: "${dashboardContext || 'General Business Data'}".
@@ -264,6 +376,26 @@ Expected Output: { "intent": "LOG_DATA_MULTI", "entries": [
   { "name": "Sarah", "company": "Google", "seats_requested": 20 }
 ] }
 `;
+      } else if (intent === "CHART_PREFERENCE") {
+        extractionPrompt += `
+Extract the data to log AND the user's preferred chart type.
+Return JSON format: { "intent": "LOG_DATA", "entities": { "key": "val" }, "preferred_chart": "bar" } 
+OR for multiple: { "intent": "LOG_DATA_MULTI", "entries": [ { "key": "val" } ], "preferred_chart": "donut" }
+
+Valid preferred_chart values: "bar", "donut", "pie", "table", "line".
+
+Example:
+User: "Electronics revenue 185K, log as donut chart"
+Expected Output: { "intent": "LOG_DATA", "entities": { "category": "Electronics", "revenue": 185000 }, "preferred_chart": "donut" }
+`;
+      } else if (intent === "UNSUPPORTED_REQUEST") {
+        extractionPrompt += `
+The user made an unsupported request (e.g., asking for a scatter plot, candlestick chart, export, etc.).
+HOWEVER, they might have ALSO provided data to log. Extract any single or multiple records they provided.
+Return JSON format: { "intent": "UNSUPPORTED_REQUEST", "message": "That's on our radar! Right now Columny supports bar charts, donut charts, data tables, and key insights. We're actively building more visualization types — check back soon. In the meantime, I've logged your data in the standard dashboard format.", "entities": { "key": "val" } }
+OR if multiple: { "intent": "UNSUPPORTED_REQUEST", "message": "...", "entries": [ { "key": "val" } ] }
+If NO data was provided to log, omit entities/entries.
+`;
       } else {
         extractionPrompt += `
 Extract a single record.
@@ -292,15 +424,16 @@ Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "pers
             extractedData = JSON.parse(match[0]);
           } catch (e2) {
              extractedData = { intent: "CONVERSATION", message: "I had trouble understanding that. Could you rephrase it?" };
-             return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
           }
         } else {
            extractedData = { intent: "CONVERSATION", message: "I had trouble understanding that. Could you rephrase it?" };
-           return new Response(JSON.stringify({ success: true, extracted: extractedData }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
         }
+      }
       }
 
       // -- Database Operations --
+      extractedData._mode = mode;
+
       if (extractedData.intent === "DATA_COMMAND") {
         if (extractedData.action === "delete_column" && extractedData.target) {
           let delQuery = supabase.from("schema_registry").delete().eq("field_name", extractedData.target).eq("user_id", userId);
@@ -313,7 +446,7 @@ Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "pers
           const { error: updateError } = await updateQuery;
           if (updateError) console.error("Error updating column:", updateError);
         }
-      } else if (extractedData.intent === "LOG_DATA" && extractedData.entities) {
+      } else if ((extractedData.intent === "LOG_DATA" || extractedData.intent === "UNSUPPORTED_REQUEST") && extractedData.entities) {
         const newKeys = Object.keys(extractedData.entities).filter(
           key => !existingFields?.some(f => f.field_name === key)
         );
@@ -330,7 +463,7 @@ Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "pers
           const { error: insertSchemaError } = await supabase.from("schema_registry").insert(newSchemaRows);
           if (insertSchemaError) console.error("Failed to insert new schema keys:", insertSchemaError);
         }
-      } else if (extractedData.intent === "LOG_DATA_MULTI" && Array.isArray(extractedData.entries)) {
+      } else if ((extractedData.intent === "LOG_DATA_MULTI" || extractedData.intent === "UNSUPPORTED_REQUEST") && Array.isArray(extractedData.entries)) {
         const allKeys = new Set();
         extractedData.entries.forEach(entry => {
           Object.keys(entry).forEach(k => allKeys.add(k));
@@ -364,10 +497,10 @@ Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "pers
       }
 
       let newEntry;
-      if (extractedData.intent === "LOG_DATA_MULTI" && Array.isArray(extractedData.entries)) {
+      if ((extractedData.intent === "LOG_DATA_MULTI" || extractedData.intent === "UNSUPPORTED_REQUEST") && Array.isArray(extractedData.entries)) {
         const insertPayloads = extractedData.entries.map(entry => ({
           raw_text,
-          extracted_data: { intent: "LOG_DATA", entities: entry }, // Store as standard LOG_DATA format
+          extracted_data: { ...extractedData, intent: extractedData.intent === "UNSUPPORTED_REQUEST" ? "UNSUPPORTED_REQUEST" : "LOG_DATA", entities: entry, entries: undefined },
           user_id: userId,
           dashboard_id: dashboard_id || null
         }));
@@ -375,7 +508,7 @@ Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "pers
         const { data, error: insertEntryError } = await supabase.from("entries").insert(insertPayloads).select();
         if (insertEntryError) throw insertEntryError;
         newEntry = data; // Array of entries
-      } else if (extractedData.intent === "LOG_DATA" || extractedData.intent === "DATA_COMMAND") {
+      } else if (extractedData.intent === "LOG_DATA" || extractedData.intent === "DATA_COMMAND" || (extractedData.intent === "UNSUPPORTED_REQUEST" && (!Array.isArray(extractedData.entries)))) {
         const { data, error: insertEntryError } = await supabase.from("entries").insert([{
           raw_text,
           extracted_data: extractedData,
@@ -384,6 +517,15 @@ Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "pers
         }]).select().single();
         if (insertEntryError) throw insertEntryError;
         newEntry = data;
+      }
+
+      // Run AI Calls (Chart Configs & Key Insights)
+      // We explicitly await this so Deno Deploy does not kill the process prematurely.
+      const isLoggingAnyData = extractedData.intent === "LOG_DATA" || 
+                               extractedData.intent === "LOG_DATA_MULTI" || 
+                               (extractedData.intent === "UNSUPPORTED_REQUEST" && (extractedData.entities || extractedData.entries));
+      if (isLoggingAnyData && dashboard_id) {
+        await generateInsightsAndCharts(dashboard_id, userId, supabase, extractedData.preferred_chart).catch(console.error);
       }
 
       return new Response(JSON.stringify({ success: true, data: newEntry, extracted: extractedData }), {

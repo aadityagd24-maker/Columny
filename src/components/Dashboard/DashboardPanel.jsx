@@ -3,11 +3,17 @@ import { useSchemaContext } from '../../context/SchemaContext';
 import DynamicTable from './DynamicTable';
 import DynamicChart from './DynamicChart';
 import FilterBar from './FilterBar';
+import KpiRibbon from './KpiRibbon';
+import KeyInsightsPanel from './KeyInsightsPanel';
+import ConfirmModal from '../common/ConfirmModal';
+import { useUndo } from '../../context/UndoContext';
 
 export default function DashboardPanel({ chatVisible, setChatVisible }) {
-  const { dashboardId, fields, entries, loading, refreshData } = useSchemaContext();
+  const { dashboardId, dashboard, fields, entries, loading, refreshData } = useSchemaContext();
   const [filterText, setFilterText] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isHiddenLocally, setIsHiddenLocally] = useState(false);
+  const { triggerDeferredDelete } = useUndo();
 
   if (loading) {
     return (
@@ -22,20 +28,31 @@ export default function DashboardPanel({ chatVisible, setChatVisible }) {
   }
 
   // Calculate simple stats for infographics
-  const validEntries = entries.filter(e => {
+  const displayEntries = isHiddenLocally ? [] : entries;
+  const displayFields = isHiddenLocally ? [] : fields;
+
+  const validEntries = displayEntries.filter(e => {
     const isLog = e.extracted_data?.intent === 'LOG_DATA' || !e.extracted_data?.intent;
     const isUndone = e.extracted_data?.is_undone;
     return isLog && !isUndone;
   });
   const totalEntries = validEntries.length;
-  const uniqueFields = fields.length;
+  const uniqueFields = displayFields.length;
 
-  const handleClearSchema = async () => {
-    const { supabase } = await import('../../lib/supabaseClient');
-    await supabase.from('schema_registry').delete().eq('dashboard_id', dashboardId);
-    await supabase.from('entries').delete().eq('dashboard_id', dashboardId);
+  const confirmClearSchema = () => {
     setShowClearConfirm(false);
-    await refreshData();
+    triggerDeferredDelete(
+      'Cleared Dashboard Columns',
+      () => setIsHiddenLocally(true),
+      async () => {
+        const { supabase } = await import('../../lib/supabaseClient');
+        await supabase.from('schema_registry').delete().eq('dashboard_id', dashboardId);
+        await supabase.from('entries').delete().eq('dashboard_id', dashboardId);
+        setIsHiddenLocally(false);
+        await refreshData();
+      },
+      () => setIsHiddenLocally(false)
+    );
   };
 
   return (
@@ -83,23 +100,14 @@ export default function DashboardPanel({ chatVisible, setChatVisible }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>{totalEntries} entries · {uniqueFields} columns</span>
             
-            <div style={{ position: 'relative', display: 'flex' }}>
-              {showClearConfirm ? (
-                <div className="animate-fade-up" style={{ position: 'absolute', left: 0, top: '100%', marginTop: '0.25rem', background: 'var(--bg-surface-elevated)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-md)', padding: '0.5rem', display: 'flex', gap: '0.5rem', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 20, whiteSpace: 'nowrap' }}>
-                  <button onClick={handleClearSchema} style={{ background: 'var(--danger)', color: 'white', border: 'none', padding: '0.3rem 0.6rem', borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>Confirm</button>
-                  <button onClick={() => setShowClearConfirm(false)} style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--glass-border)', padding: '0.3rem 0.6rem', borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', cursor: 'pointer', transition: 'all 0.2s' }} onMouseOver={e => e.currentTarget.style.color = 'var(--text-primary)'} onMouseOut={e => e.currentTarget.style.color = 'var(--text-secondary)'}>Cancel</button>
-                </div>
-              ) : (
-                <button onClick={() => setShowClearConfirm(true)} title="Clear Columns" style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', padding: '0.2rem', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onMouseOver={e => {e.currentTarget.style.color = 'var(--danger)'; e.currentTarget.style.background = 'rgba(139, 58, 58, 0.1)'}} onMouseOut={e => {e.currentTarget.style.color = 'var(--text-tertiary)'; e.currentTarget.style.background = 'transparent'}}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
-                </button>
-              )}
-            </div>
+              <button onClick={() => setShowClearConfirm(true)} title="Clear Columns" style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', padding: '0.2rem', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onMouseOver={e => {e.currentTarget.style.color = 'var(--danger)'; e.currentTarget.style.background = 'rgba(139, 58, 58, 0.1)'}} onMouseOut={e => {e.currentTarget.style.color = 'var(--text-tertiary)'; e.currentTarget.style.background = 'transparent'}}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
+              </button>
           </div>
         </div>
       </div>
 
-      {fields.length === 0 ? (
+      {displayFields.length === 0 ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
           <div style={{ 
             width: '120px', height: '120px', borderRadius: '50%', 
@@ -116,18 +124,35 @@ export default function DashboardPanel({ chatVisible, setChatVisible }) {
       ) : (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2rem', overflowY: 'auto', paddingRight: '0.5rem' }}>
           
+          <KpiRibbon fields={displayFields} entries={validEntries} />
+
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <h3 style={{ fontSize: '1.1rem', fontWeight: '500', color: 'var(--text-primary)', margin: 0, fontFamily: 'var(--font-display)' }}>Records</h3>
               <FilterBar filterText={filterText} setFilterText={setFilterText} />
             </div>
-            <DynamicTable fields={fields} entries={validEntries} globalFilter={filterText} />
+            <DynamicTable fields={displayFields} entries={validEntries} globalFilter={filterText} />
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.5rem', paddingBottom: '1.5rem' }}>
-            <DynamicChart fields={fields} entries={validEntries} />
+            <DynamicChart fields={displayFields} entries={validEntries} aiChartConfigs={dashboard?.chart_config} />
           </div>
+
+          <KeyInsightsPanel 
+            insights={dashboard?.key_insights} 
+            loading={!dashboard?.key_insights && validEntries.length > 0} 
+            hasData={validEntries.length > 0} 
+          />
         </div>
+      )}
+      {showClearConfirm && (
+        <ConfirmModal 
+          title="Clear Dashboard Columns"
+          message="Are you sure you want to completely clear this dashboard's columns and records? This will delete all logged data."
+          confirmText="Clear Data"
+          onConfirm={confirmClearSchema}
+          onCancel={() => setShowClearConfirm(false)}
+        />
       )}
     </div>
   );

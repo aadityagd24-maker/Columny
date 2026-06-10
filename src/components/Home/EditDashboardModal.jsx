@@ -1,14 +1,12 @@
 import React, { useState } from 'react';
 import { useDashboards } from '../../hooks/useDashboards';
-import { useProfile } from '../../hooks/useProfile';
 
-export default function CreateDashboardModal({ onClose, onSuccess }) {
-  const { createDashboard, dashboards } = useDashboards();
-  const { profile } = useProfile();
+export default function EditDashboardModal({ dashboard, onClose, onSuccess }) {
+  const { updateDashboard } = useDashboards();
   
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [context, setContext] = useState('');
+  const [name, setName] = useState(dashboard.name || '');
+  const [description, setDescription] = useState(dashboard.description || '');
+  const [context, setContext] = useState(dashboard.context || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -19,17 +17,12 @@ export default function CreateDashboardModal({ onClose, onSuccess }) {
       return;
     }
 
-    if (!profile?.is_owner && dashboards.length >= 3) {
-      setError('Beta limit reached: You cannot create more than 3 dashboards.');
-      return;
-    }
-
     setLoading(true);
     setError('');
 
     try {
-      const newDashboard = await createDashboard({ name, description, context });
-      onSuccess(newDashboard);
+      const updatedDashboard = await updateDashboard(dashboard.id, { name, description, context });
+      onSuccess(updatedDashboard);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -41,7 +34,7 @@ export default function CreateDashboardModal({ onClose, onSuccess }) {
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}>
       <div className="glass animate-fade-up" style={{ width: '100%', maxWidth: '450px', padding: '2rem', borderRadius: 'var(--radius-xl)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', margin: 0 }}>New Dashboard</h2>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', margin: 0 }}>Edit Dashboard</h2>
           <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer' }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
@@ -109,7 +102,7 @@ export default function CreateDashboardModal({ onClose, onSuccess }) {
                 opacity: loading ? 0.7 : 1
               }}
             >
-              {loading ? 'Creating...' : 'Create Dashboard'}
+              {loading ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
         </form>
