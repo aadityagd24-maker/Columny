@@ -1,0 +1,14 @@
+{
+  "name": "columny-mcp",
+  "version": "1.0.0",
+  "description": "An MCP server for Columny to expose dashboard data to AI agents.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
