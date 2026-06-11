@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.0";
+import { MongoClient } from "npm:mongodb";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -517,6 +518,27 @@ Expected Output: { "intent": "LOG_DATA", "entities": { "action": "Called", "pers
         }]).select().single();
         if (insertEntryError) throw insertEntryError;
         newEntry = data;
+      }
+
+      // -- MongoDB Sidecar Integration --
+      // Mirror the structured data to MongoDB Unstructured Data Lake
+      try {
+        const mongoUri = Deno.env.get("MONGODB_URI");
+        if (mongoUri && isLoggingAnyData) {
+          const mongoClient = new MongoClient(mongoUri);
+          await mongoClient.connect();
+          const db = mongoClient.db("columny_logs");
+          const collection = db.collection("entries");
+          
+          if (Array.isArray(newEntry)) {
+            await collection.insertMany(newEntry);
+          } else if (newEntry) {
+            await collection.insertOne(newEntry);
+          }
+          await mongoClient.close();
+        }
+      } catch (mongoErr) {
+        console.error("Failed to mirror data to MongoDB sidecar:", mongoErr);
       }
 
       // Run AI Calls (Chart Configs & Key Insights)

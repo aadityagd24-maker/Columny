@@ -5,15 +5,22 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { createClient } from "@supabase/supabase-js";
+import { MongoClient } from "mongodb";
 
 // Initialize Supabase Client
-// Users will need to set these in their Claude Desktop config environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
+// Initialize MongoDB Client
+const mongoUri = process.env.MONGODB_URI;
 
 let supabase;
 if (supabaseUrl && supabaseKey) {
   supabase = createClient(supabaseUrl, supabaseKey);
+}
+
+let mongoClient;
+if (mongoUri) {
+  mongoClient = new MongoClient(mongoUri);
 }
 
 const server = new Server(
@@ -104,14 +111,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name === "get_dashboard_entries") {
       const { dashboard_id, limit = 20 } = request.params.arguments;
       
-      const { data, error } = await supabase
-        .from("entries")
-        .select("id, raw_text, extracted_data, created_at")
-        .eq("dashboard_id", dashboard_id)
-        .order("created_at", { ascending: false })
-        .limit(limit);
+      if (!mongoClient) {
+        return {
+          content: [{ type: "text", text: "MongoDB is not configured. Please set MONGODB_URI to access the Unstructured Data Lake." }],
+          isError: true,
+        };
+      }
 
-      if (error) throw error;
+      await mongoClient.connect();
+      const db = mongoClient.db("columny_logs");
+      const data = await db.collection("entries")
+        .find({ dashboard_id })
+        .sort({ created_at: -1 })
+        .limit(limit)
+        .toArray();
 
       return {
         content: [
