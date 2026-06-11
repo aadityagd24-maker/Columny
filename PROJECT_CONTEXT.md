@@ -1,30 +1,28 @@
-Project Context: Columny - Dynamic "Chat-to-Dashboard" Workspace
-1. Project Overview
-We are building a "Text-to-Relational" (Text2R) workspace named Columny, tailored for Go-To-Market (GTM) and sales teams. The application allows users to input unstructured conversational updates (e.g., "I sent the Short-Intro email to Hans at BMW in Germany today, and he replied in 20 minutes"). The AI autonomously extracts the entities, dynamically updates a database schema, and instantly renders interactive, filterable dashboards and tables.
+# Project Context: Columny - Agentic "Chat-to-Dashboard" Workspace
 
-2. Core Architecture & Tech Stack
-Frontend: React.js using declarative, JSON-Schema-driven UI libraries (such as @ui-schema/ui-schema or @react-formgen/json-schema) to automatically generate UI components, tables, and charts directly from the data structure.
+## 1. Project Overview
+Columny is a "Text-to-Relational" agentic workspace tailored for sales teams, founders, and creators. The application eliminates manual data entry by allowing users to input unstructured conversational updates (e.g., "I sent the intro email to Hans at BMW today"). The AI autonomously extracts the entities, dynamically updates the database schema, and logs the data to multiple isolated dashboards in real time. 
 
-Backend & Database: PostgreSQL hosted on Supabase (or Firebase). It will use a hybrid storage model: standard relational columns for fixed dimensions (like id, created_at) and JSONB columns to store highly variable, dynamically evolving parameters without requiring manual database migrations.
+The application features a dual-mode chat interface:
+- **Build Mode:** The AI acts as a database administrator, logging data and executing schema edits.
+- **Consult Mode:** The AI acts as an analytical advisor, answering questions and surfacing business insights without mutating the database.
 
-AI Models: Gemini 1.5 Flash (or GPT-4o-mini) via API for high-speed, low-cost data extraction and SQL query generation.
+## 2. Core Architecture & Tech Stack
+- **Frontend:** React.js and Vite using a lightning-fast, custom glassmorphism CSS architecture (no heavy UI libraries).
+- **Primary Backend & Database:** Supabase (PostgreSQL) handling user auth, real-time data syncing, and the strict schema evolution via the `schema_registry` and `entries` tables.
+- **Sidecar Data Lake:** MongoDB Atlas serves as an unstructured agentic data lake, natively mirroring all logged entries for scalable long-term memory.
+- **Agentic Engine:** Supabase Edge Functions integrated with the **Gemini 2.5 Flash** API (via an OpenAI-compatible proxy) to handle intent routing, data extraction, and dynamic schema execution.
+- **MCP Integration:** An official, standalone **Model Context Protocol (MCP)** Node.js server that securely exposes the user's Columny data to local desktop AI agents (like Claude Desktop).
 
-3. The Processing Pipeline
-Ingestion: The user submits unstructured text into the Columny chat interface.
+## 3. The Processing Pipeline
+1. **Ingestion & Intent Routing:** The user submits unstructured text. The AI determines the exact "Intent" (e.g., `LOG_DATA`, `DATA_COMMAND`, `GENERATE_INSIGHTS`).
+2. **Constrained Extraction:** The AI processes the text using strict JSON Schema formats to pull exact entities ensuring 100% schema compliance.
+3. **Dynamic Schema Evolution:** If the user logs a new variable or issues a schema command (e.g., "delete the company column"), the AI autonomously executes a Data Definition Language (DDL) equivalent by modifying the user's isolated `schema_registry`.
+4. **Sidecar Mirroring:** Validated entries are logged to the structured Supabase Postgres database and simultaneously pushed to the MongoDB unstructured data lake.
+5. **Real-time Projection:** The React frontend subscribes to Supabase real-time events, instantly auto-generating new table columns, dynamic charts (Bar, Donut, etc.), and Key Performance Indicator (KPI) ribbons based on the new schema and data.
 
-Constrained Extraction: The AI processes the text using strict JSON Schema formats (Structured Outputs) to pull exact entities (e.g., Name, Company, Action, Time) ensuring 100% schema compliance.
-
-Dynamic Schema Evolution: If the user mentions a completely new variable (e.g., "device type"), the system updates the logical schema and stores the new key safely inside the PostgreSQL JSONB column.
-
-Self-Healing SQL Engine: To render charts, the AI translates the user's natural language into SQL. If the SQL query fails, the backend catches the PostgreSQL SQLSTATE error and feeds it back to the AI in an automatic retry loop until the query successfully returns data.
-
-Dynamic UI Projection: The React frontend reads the updated schema and database results, instantly auto-generating new table columns, filter dropdowns, and visual charts.
-
-4. CRITICAL RULES FOR THE AI CODING AGENT
-Read-Only Execution: Any AI-generated SQL query used to fetch data for dashboards MUST be executed on a strictly read-only database connection at the driver level to prevent accidental DROP, UPDATE, or DELETE commands.
-
-No Hardcoded UIs: The frontend must never have hardcoded table columns or chart axes. The UI must be entirely declarative and adapt dynamically to whatever JSON schema the backend provides.
-
-Cost Efficiency: Rely heavily on caching. Do not make an LLM API call if the source data or query hasn't changed.
-
-Step-by-Step Implementation: Implement one pipeline stage at a time. Write tests for the extraction step and confirm it works before moving to the database storage step, and so on.
+## 4. CRITICAL RULES FOR THE AI CODING AGENT
+- **Strict Mode Separation:** Ensure the strict boundary between Build Mode (mutable) and Consult Mode (immutable/read-only) is preserved in both the frontend message filtering and the backend edge functions.
+- **No Hardcoded UIs:** The frontend must never have hardcoded table columns or chart axes. The UI must adapt dynamically to the `schema_registry`.
+- **Bulletproof Undo Logic:** Any new data insertion paths must be fully compatible with the 1-step Undo context, ensuring users can safely revert AI actions.
+- **Simplicity & Performance:** Prefer pure CSS and minimal dependencies. Do not introduce bloated libraries unless absolutely necessary.
